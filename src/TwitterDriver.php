@@ -2,7 +2,12 @@
 
 namespace BotMan\Drivers\Twitter;
 
+use BotMan\BotMan\Messages\Attachments\Audio;
+use BotMan\BotMan\Messages\Attachments\File;
+use BotMan\BotMan\Messages\Attachments\Image;
+use BotMan\BotMan\Messages\Attachments\Video;
 use BotMan\BotMan\Users\User;
+use danog\MadelineProto\Exception;
 use Illuminate\Support\Collection;
 use BotMan\BotMan\Drivers\HttpDriver;
 use Abraham\TwitterOAuth\TwitterOAuth;
@@ -23,6 +28,12 @@ class TwitterDriver extends HttpDriver implements VerifiesService
 
     /** @var TwitterOAuth */
     protected $connection;
+
+
+    private $supportedAttachments = [
+        Video::class,
+        Image::class,
+    ];
 
     /**
      * @param Request $request
@@ -55,7 +66,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
             $signature = $this->headers['x-twitter-webhooks-signature'][0];
             $hash = hash_hmac('sha256', json_encode($this->payload->all()), $this->config->get('consumer_secret'), true);
 
-            return $signature === 'sha256='.base64_encode($hash);
+            return $signature === 'sha256=' . base64_encode($hash);
         }
         return false;
     }
@@ -75,7 +86,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
                 $message = $event['message_create'];
 
                 return new IncomingMessage($message['message_data']['text'], $message['sender_id'], $message['target']['recipient_id'], $event);
-        })->toArray();
+            })->toArray();
     }
 
     /**
@@ -83,7 +94,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
      */
     public function isConfigured()
     {
-        return ! empty($this->config->get('consumer_secret'));
+        return !empty($this->config->get('consumer_secret'));
     }
 
     /**
@@ -111,7 +122,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
         $payload = $message->getPayload();
         $answer = Answer::create($message->getText())->setMessage($message);
 
-        if(isset($payload['message_create']['message_data']['quick_reply_response']['metadata'])) {
+        if (isset($payload['message_create']['message_data']['quick_reply_response']['metadata'])) {
             $answer->setInteractiveReply(true);
             $answer->setValue($payload['message_create']['message_data']['quick_reply_response']['metadata']);
         }
@@ -137,7 +148,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
         return [
             'text' => $question->getText(),
             'quick_reply' => [
-                'type'=>'options',
+                'type' => 'options',
                 'options' => $buttons->toArray(),
             ],
         ];
@@ -165,7 +176,63 @@ class TwitterDriver extends HttpDriver implements VerifiesService
             ]
         ];
         if ($message instanceof OutgoingMessage) {
-            $payload['event']['message_create']['message_data']['text'] = $message->getText();
+//            $payload['event']['message_create']['message_data']['text'] = $message->getText();
+            $attachment = $message->getAttachment();
+            if (!is_null($attachment) && in_array(get_class($attachment), $this->supportedAttachments)) {
+                $attachmentType = strtolower(basename(str_replace('\\', '/', get_class($attachment))));
+
+                $temp = tempnam("/tmp", "FOO");
+                file_put_contents(
+                    $temp,
+                    file_get_contents($attachment->getUrl())
+                );
+                $mediaOBJ = $this->connection->upload('media/upload', [
+                    //'media' => rawurldecode($url),
+                    'media' => $temp,
+                    //'media_data'=>$imageBase64,
+                    'media_category' => 'dm_image',
+                    'media_type' => 'dm_image',
+                    'shared' => true,
+                ], true);
+
+
+                for ($i = 0; $i < 10; $i++) {
+                    if (isset($mediaOBJ->processing_info->check_after_secs)) {
+                        sleep($mediaOBJ->processing_info->check_after_secs + 1);
+                    } else {
+                        break;
+                    }
+                    if ($mediaOBJ->processing_info->state == 'succeeded') {
+                        break;
+                    }
+                    $status = ($this->connection->mediaStatus($mediaOBJ->media_id_string));
+
+                    if (isset($status->processing_info->error->message)) {
+                        throw new \Exception($status->processing_info->error->message);
+                    }
+                    if (isset($status->errors[0]->message)) {
+                        throw new \Exception($status->errors[0]->message);
+                    }
+                }
+
+                $payload['event']['message_create']['message_data']['text'] = $message->getText();
+                $payload['event']['message_create']['message_data']['attachment'] = array("type" => "media", 'media' => $mediaOBJ);
+                $payload['event']['message_create']['message_data']['attachment']['media']->id = $mediaOBJ->media_id_string;
+
+
+//                unset($parameters['message']['text']);
+//                $parameters['message']['attachment'] = [
+//                    'type' => $attachmentType,
+//                    'payload' => [
+//                        'is_reusable' => $attachment->getExtras('is_reusable') ?? false,
+//                        'url' => $attachment->getUrl(),
+//                    ],
+//                ];
+            } else {
+                $payload['event']['message_create']['message_data']['text'] = $message->getText();
+            }
+
+
         } elseif ($message instanceof Question) {
             $payload['event']['message_create']['message_data'] = $this->convertQuestion($message);
         }
@@ -217,11 +284,11 @@ class TwitterDriver extends HttpDriver implements VerifiesService
      */
     public function verifyRequest(Request $request)
     {
-        if (! is_null($request->get('crc_token'))) {
+        if (!is_null($request->get('crc_token'))) {
             $hash = hash_hmac('sha256', $request->get('crc_token'), $this->config->get('consumer_secret'), true);
 
             return Response::create(json_encode([
-                'response_token' => 'sha256='.base64_encode($hash)
+                'response_token' => 'sha256=' . base64_encode($hash)
             ]), 200, [
                 'Content-Type' => 'application/json'
             ])->send();
