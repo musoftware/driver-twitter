@@ -176,7 +176,7 @@ class TwitterDriver extends HttpDriver implements VerifiesService
             ]
         ];
         if ($message instanceof OutgoingMessage) {
-//            $payload['event']['message_create']['message_data']['text'] = $message->getText();
+            //            $payload['event']['message_create']['message_data']['text'] = $message->getText();
             $attachment = $message->getAttachment();
             if (!is_null($attachment) && in_array(get_class($attachment), $this->supportedAttachments)) {
                 $attachmentType = strtolower(basename(str_replace('\\', '/', get_class($attachment))));
@@ -186,53 +186,51 @@ class TwitterDriver extends HttpDriver implements VerifiesService
                     $temp,
                     file_get_contents($attachment->getUrl())
                 );
-                $mediaOBJ = $this->connection->upload('media/upload', [
-                    //'media' => rawurldecode($url),
-                    'media' => $temp,
-                    //'media_data'=>$imageBase64,
-                    'media_category' => 'dm_image',
-                    'media_type' => 'dm_image',
-                    'shared' => true,
-                ], true);
+                if (($attachmentType == 'image') || ($attachmentType == 'video')) {
+                    $media_type = '';
+                    if ($attachmentType == 'image') {
+                        $media_type = 'dm_image';
+                    }
+                    if ($attachmentType == 'video') {
+                        $media_type = 'dm_video';
+                    }
 
+                    $mediaOBJ = $this->connection->upload('media/upload', [
+                        'media' => $temp,
+                        'media_category' => $media_type,
+                        'media_type' => $media_type,
+                        'shared' => true,
+                    ], true);
 
-                for ($i = 0; $i < 10; $i++) {
-                    if (isset($mediaOBJ->processing_info->check_after_secs)) {
-                        sleep($mediaOBJ->processing_info->check_after_secs + 1);
-                    } else {
-                        break;
-                    }
-                    if ($mediaOBJ->processing_info->state == 'succeeded') {
-                        break;
-                    }
-                    $status = ($this->connection->mediaStatus($mediaOBJ->media_id_string));
+                    for ($i = 0; $i < 10; $i++) {
+                        if (isset($mediaOBJ->processing_info->check_after_secs)) {
+                            sleep($mediaOBJ->processing_info->check_after_secs + 1);
+                        } else {
+                            break;
+                        }
+                        if ($mediaOBJ->processing_info->state == 'succeeded') {
+                            break;
+                        }
+                        $status = ($this->connection->mediaStatus($mediaOBJ->media_id_string));
 
-                    if (isset($status->processing_info->error->message)) {
-                        throw new \Exception($status->processing_info->error->message);
+                        if (isset($status->processing_info->error->message)) {
+                            throw new \Exception($status->processing_info->error->message);
+                        }
+                        if (isset($status->errors[0]->message)) {
+                            throw new \Exception($status->errors[0]->message);
+                        }
                     }
-                    if (isset($status->errors[0]->message)) {
-                        throw new \Exception($status->errors[0]->message);
-                    }
+                    $payload['event']['message_create']['message_data']['attachment'] = array("type" => "media", 'media' => $mediaOBJ);
+                    $payload['event']['message_create']['message_data']['attachment']['media']->id = $mediaOBJ->media_id_string;
                 }
 
+
+
+
                 $payload['event']['message_create']['message_data']['text'] = $message->getText();
-                $payload['event']['message_create']['message_data']['attachment'] = array("type" => "media", 'media' => $mediaOBJ);
-                $payload['event']['message_create']['message_data']['attachment']['media']->id = $mediaOBJ->media_id_string;
-
-
-//                unset($parameters['message']['text']);
-//                $parameters['message']['attachment'] = [
-//                    'type' => $attachmentType,
-//                    'payload' => [
-//                        'is_reusable' => $attachment->getExtras('is_reusable') ?? false,
-//                        'url' => $attachment->getUrl(),
-//                    ],
-//                ];
             } else {
                 $payload['event']['message_create']['message_data']['text'] = $message->getText();
             }
-
-
         } elseif ($message instanceof Question) {
             $payload['event']['message_create']['message_data'] = $this->convertQuestion($message);
         }
